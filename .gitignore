@@ -1,0 +1,38 @@
+# Build directories
+build/
+
+# CMake
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# Qt generated files
+*.pro.user
+*.qmlc
+*.jsc
+
+# Binaries
+*.o
+*.a
+*.so
+*.exe
+
+# IDE files
+.qtc_clangd/
+.clangd/
+.vscode/
+*.swp
+*~
+
+# Stockfish
+assets/stockfish/
+assets/stockfish-win/
+
+# OS files
+.DS_Store
+Thumbs.db
