@@ -4,7 +4,7 @@ project(ntchess VERSION 0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick)
+find_package(Qt6 REQUIRED COMPONENTS Quick Multimedia Concurrent)
 
 qt_standard_project_setup(REQUIRES 6.10)
 
@@ -23,12 +23,25 @@ qt_add_executable(appntchess
     src/backend/types.h
     src/backend/uci_engine.cpp
     src/backend/uci_engine.h
+    src/bridge/GameBridge.cpp
+    src/bridge/GameBridge.h
+)
+
+target_compile_definitions(appntchess PRIVATE
+    ASSETS_PATH="${CMAKE_SOURCE_DIR}/assets"
+)
+
+target_include_directories(appntchess PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/bridge
 )
 
 qt_add_qml_module(appntchess
     URI ntchess
     QML_FILES
         qml/Main.qml
+        qml/ChessBoard.qml
+        qml/SettingsDialog.qml
+        qml/NewGameDialog.qml
 )
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
@@ -43,7 +56,7 @@ set_target_properties(appntchess PROPERTIES
 )
 
 target_link_libraries(appntchess
-    PRIVATE Qt6::Quick
+    PRIVATE Qt6::Quick Qt6::Multimedia Qt6::Concurrent
 )
 
 install(TARGETS appntchess

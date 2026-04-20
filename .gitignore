@@ -23,6 +23,7 @@ _deps/
 *.exe
 
 # IDE files
+.qtcreator/
 .qtc_clangd/
 .clangd/
 .vscode/
