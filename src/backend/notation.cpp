@@ -280,6 +280,240 @@ Move uci_to_move(const std::string& uci, Board& board, Color turn) {
     return invalid;
 }
 
+// ---------------------------------------------------------------------------
+// san_to_move
+// ---------------------------------------------------------------------------
+Move san_to_move(const std::string& san, Board& board, Color turn)
+{
+    Move invalid(-1, -1, NO_PIECE);
+    if (san.empty()) return invalid;
+
+    std::string s = san;
+    // Strip trailing check / checkmate / annotation markers
+    while (!s.empty() &&
+           (s.back() == '+' || s.back() == '#' ||
+            s.back() == '!' || s.back() == '?'))
+        s.pop_back();
+    if (s.empty()) return invalid;
+
+    std::vector<Move> legal = generate_legal_moves(board, turn);
+
+    // ── Castling ──────────────────────────────────────────────────────────
+    if (s == "O-O-O" || s == "0-0-0") {
+        for (const Move& m : legal)
+            if (m.move_type == CASTLING && m.square_to % 8 == 2) return m;
+        return invalid;
+    }
+    if (s == "O-O" || s == "0-0") {
+        for (const Move& m : legal)
+            if (m.move_type == CASTLING && m.square_to % 8 == 6) return m;
+        return invalid;
+    }
+
+    // ── Promotion suffix (=Q / =R / =B / =N) ─────────────────────────────
+    PieceType promo = NO_PIECE_TYPE;
+    if (s.size() >= 2 && s[s.size() - 2] == '=') {
+        char pc = static_cast<char>(std::toupper(static_cast<unsigned char>(s.back())));
+        if      (pc == 'Q') promo = QUEEN;
+        else if (pc == 'R') promo = ROOK;
+        else if (pc == 'B') promo = BISHOP;
+        else if (pc == 'N') promo = KNIGHT;
+        s = s.substr(0, s.size() - 2);
+    }
+
+    // ── Destination square: last two chars ────────────────────────────────
+    if (s.size() < 2) return invalid;
+    int to_file = s[s.size() - 2] - 'a';
+    int to_rank = s[s.size() - 1] - '1';
+    if (to_file < 0 || to_file > 7 || to_rank < 0 || to_rank > 7) return invalid;
+    int to_sq = get_index(to_file, to_rank);
+    s = s.substr(0, s.size() - 2);
+
+    // Remove capture 'x'
+    if (!s.empty() && s.back() == 'x') s.pop_back();
+
+    // ── Piece type ────────────────────────────────────────────────────────
+    PieceType piece_type = PAWN;
+    if (!s.empty() && std::isupper(static_cast<unsigned char>(s[0]))) {
+        switch (s[0]) {
+            case 'N': piece_type = KNIGHT; break;
+            case 'B': piece_type = BISHOP; break;
+            case 'R': piece_type = ROOK;   break;
+            case 'Q': piece_type = QUEEN;  break;
+            case 'K': piece_type = KING;   break;
+            default:                       break;
+        }
+        if (piece_type != PAWN)
+            s = s.substr(1);
+    }
+
+    // ── Disambiguation: remaining chars are file and/or rank ──────────────
+    int dis_file = -1, dis_rank = -1;
+    for (char c : s) {
+        if (c >= 'a' && c <= 'h')      dis_file = c - 'a';
+        else if (c >= '1' && c <= '8') dis_rank = c - '1';
+    }
+
+    // ── Find matching legal move ──────────────────────────────────────────
+    for (const Move& m : legal) {
+        if (m.square_to != to_sq) continue;
+        Piece p = board.get_piece(m.square_from);
+        if (get_type(p)  != piece_type) continue;
+        if (get_color(p) != turn)       continue;
+        // For promotions: must match the requested promo piece
+        if (promo != NO_PIECE_TYPE) {
+            if (m.move_type != PROMOTION)          continue;
+            if (m.promotion_piece_type != promo)   continue;
+        } else if (piece_type == PAWN && m.move_type == PROMOTION) {
+            // No =X specified: skip non-queen promotions (default queen)
+            if (m.promotion_piece_type != QUEEN)   continue;
+        }
+        if (dis_file != -1 && m.square_from % 8 != dis_file) continue;
+        if (dis_rank != -1 && m.square_from / 8 != dis_rank) continue;
+        return m;
+    }
+    return invalid;
+}
+
+// ---------------------------------------------------------------------------
+// parse_pgn
+// ---------------------------------------------------------------------------
+bool parse_pgn(const std::string& pgn_text, Game& out_game)
+{
+    // ── Extract optional FEN tag ──────────────────────────────────────────
+    std::string start_fen;
+    {
+        const std::string tag = "[FEN \"";
+        auto pos = pgn_text.find(tag);
+        if (pos != std::string::npos) {
+            auto start = pos + tag.size();
+            auto end   = pgn_text.find('"', start);
+            if (end != std::string::npos)
+                start_fen = pgn_text.substr(start, end - start);
+        }
+    }
+
+    // ── Strip tag headers (lines beginning with '[') ──────────────────────
+    std::string moves_text;
+    {
+        std::istringstream ss(pgn_text);
+        std::string line;
+        bool past_headers = false;
+        while (std::getline(ss, line)) {
+            // Trim leading whitespace
+            size_t first = line.find_first_not_of(" \t\r");
+            if (first == std::string::npos) {
+                if (past_headers) moves_text += '\n';
+                continue;
+            }
+            if (line[first] == '[') continue; // tag line – skip
+            past_headers = true;
+            moves_text += line + '\n';
+        }
+    }
+
+    // ── Remove ; comments (rest of line) ─────────────────────────────────
+    {
+        std::string cleaned;
+        cleaned.reserve(moves_text.size());
+        for (size_t i = 0; i < moves_text.size(); ++i) {
+            if (moves_text[i] == ';') {
+                while (i < moves_text.size() && moves_text[i] != '\n') ++i;
+            } else {
+                cleaned += moves_text[i];
+            }
+        }
+        moves_text = std::move(cleaned);
+    }
+
+    // ── Remove { } comments ──────────────────────────────────────────────
+    {
+        std::string cleaned;
+        cleaned.reserve(moves_text.size());
+        int depth = 0;
+        for (char c : moves_text) {
+            if      (c == '{') { ++depth; }
+            else if (c == '}') { if (depth > 0) --depth; }
+            else if (depth == 0) cleaned += c;
+        }
+        moves_text = std::move(cleaned);
+    }
+
+    // ── Remove ( ) variations ─────────────────────────────────────────────
+    {
+        std::string cleaned;
+        cleaned.reserve(moves_text.size());
+        int depth = 0;
+        for (char c : moves_text) {
+            if      (c == '(') { ++depth; }
+            else if (c == ')') { if (depth > 0) --depth; }
+            else if (depth == 0) cleaned += c;
+        }
+        moves_text = std::move(cleaned);
+    }
+
+    // ── Tokenise ─────────────────────────────────────────────────────────
+    std::istringstream ss(moves_text);
+    std::vector<std::string> tokens;
+    {
+        std::string tok;
+        while (ss >> tok) tokens.push_back(tok);
+    }
+
+    // ── Build game ────────────────────────────────────────────────────────
+    out_game = Game();
+    if (!start_fen.empty())
+        out_game.set_start_fen(start_fen);
+
+    Color turn = start_fen.empty() ? WHITE
+                                   : (start_fen.find(" b ") != std::string::npos ? BLACK : WHITE);
+
+    const std::string results[] = { "1-0", "0-1", "1/2-1/2", "*" };
+
+    for (const std::string& tok : tokens) {
+        // Skip result tokens
+        bool is_result = false;
+        for (const auto& r : results) if (tok == r) { is_result = true; break; }
+        if (is_result) break;
+
+        // Skip NAG annotations ($N)
+        if (!tok.empty() && tok[0] == '$') continue;
+
+        // Strip a leading move-number prefix like "1.", "12.", "1..." etc.
+        // This handles both "1. e4" (separate token "1.") and "1.e4" (merged).
+        std::string san = tok;
+        {
+            size_t i = 0;
+            while (i < san.size() && std::isdigit(static_cast<unsigned char>(san[i]))) ++i;
+            if (i > 0 && i < san.size() && san[i] == '.') {
+                // skip all trailing dots
+                while (i < san.size() && san[i] == '.') ++i;
+                san = san.substr(i);
+            }
+        }
+        // After stripping, might be empty (was a pure move-number token like "1.")
+        if (san.empty()) continue;
+        // Skip pure move-number tokens that had no SAN attached
+        {
+            bool all_digits_dots = true;
+            for (char c : san)
+                if (!std::isdigit(static_cast<unsigned char>(c)) && c != '.') { all_digits_dots = false; break; }
+            if (all_digits_dots) continue;
+        }
+
+        // Parse as SAN
+        Board cur_board = out_game.get_board(); // take a copy so san_to_move can inspect it
+        Move m = san_to_move(san, cur_board, turn);
+        if (m.square_from == -1) return false; // illegal / unrecognised
+
+        if (!out_game.make_move(m)) return false;
+        turn = (turn == WHITE) ? BLACK : WHITE;
+    }
+
+    out_game.check_game_status();
+    return true;
+}
+
 std::string game_to_pgn(const Game& game,
                          const std::string& whitePlayer,
                          const std::string& blackPlayer,

@@ -9,6 +9,7 @@
 #include <QSettings>
 #include <QTimer>
 #include <QVariantList>
+#include <QVariantMap>
 
 // Initial piece counts on a fresh board (index = Piece enum value)
 static const int kInitialCount[13] = {
@@ -32,7 +33,7 @@ GameBridge::GameBridge(QObject* parent)
 {
     qRegisterMetaType<UCISearchResult>();
 
-    // Load persisted engine path
+    // Load persisted settings
     QSettings settings;
     m_enginePath        = settings.value("engine/path",       QString()).toString();
     // m_enginePathBlack is intentionally not persisted – it is temporary (per-game only)
@@ -46,23 +47,63 @@ GameBridge::GameBridge(QObject* parent)
         // Detect flag before emitting so QML sees the updated status
         bool justFlagged = m_game.flag_if_timed_out();
         emit clockChanged();
-        if (justFlagged)
+        if (justFlagged) {
+            // Stop the engine search immediately so it doesn't keep burning CPU.
+            m_engineThinking = false;
+            if (m_engineWorker)      m_engineWorker->stopSearch();
+            if (m_engineWorkerBlack) m_engineWorkerBlack->stopSearch();
             emit positionChanged();
+        }
         // Stop ticking if game is over
         if (m_game.get_game_status() != ONGOING)
             m_clockTimer->stop();
     });
 
-    newGame();
+    // Restart background analysis whenever the displayed position changes.
+    connect(this, &GameBridge::positionChanged,
+            this, &GameBridge::restartAnalysisIfRunning);
+
+    // On startup: if a saved game exists, restore its board position so the
+    // menu background shows the last position.  Engine/clock are NOT started
+    // here – that happens only when the user presses Continue (loadSavedGame).
+    if (hasSavedGame()) {
+        QSettings s;
+        s.beginGroup(QStringLiteral("savedgame"));
+        QString startFen = s.value(QStringLiteral("startFen")).toString();
+        QString movesStr = s.value(QStringLiteral("moves")).toString();
+        s.endGroup();
+
+        m_game = Game();
+        if (!startFen.isEmpty())
+            m_game.set_start_fen(startFen.toStdString());
+        const QStringList uciMoves = movesStr.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        for (const QString& uci : uciMoves) {
+            Board b = m_game.get_board();
+            Move  m = uci_to_move(uci.toStdString(), b, m_game.get_turn());
+            if (m.square_from == m.square_to) break; // corrupt entry – stop here
+            m_game.make_move(m);
+        }
+        m_game.check_game_status();
+        if (!m_game.get_move_history().empty()) {
+            m_lastMoveFrom = m_game.get_move_history().back().square_from;
+            m_lastMoveTo   = m_game.get_move_history().back().square_to;
+        }
+        buildCapturedLists();
+        emit positionChanged();
+    } else {
+        newGame();
+    }
 }
 
 void GameBridge::newGame(const QString& fen)
 {
     m_clockTimer->stop();
     m_engineThinking = false;
+    m_computerSide   = -1;  // prevent spurious maybeStartEngineMove (e.g. Back to Menu)
     m_lastMoveFrom = -1;
     m_lastMoveTo   = -1;
     m_viewIndex    = -1;
+    m_resigned     = false;
     m_game = Game();
     if (!fen.isEmpty())
         m_game.set_start_fen(fen.toStdString());
@@ -106,6 +147,27 @@ void GameBridge::newGame(const QString& fen)
     }
     // Let engine move immediately if it plays white (or if FEN says black just moved)
     QTimer::singleShot(0, this, &GameBridge::maybeStartEngineMove);
+}
+
+bool GameBridge::loadPgn(const QString& pgnText)
+{
+    Game loaded;
+    if (!parse_pgn(pgnText.toStdString(), loaded))
+        return false;
+
+    // Swap in the loaded game exactly like a newGame() call but without
+    // touching engine state (analysis board has no engine side).
+    m_clockTimer->stop();
+    m_engineThinking = false;
+    m_lastMoveFrom   = -1;
+    m_lastMoveTo     = -1;
+    m_viewIndex      = -1;
+    m_resigned       = false;
+    m_game = std::move(loaded);
+    buildCapturedLists();
+    emit positionChanged();
+    emit clockChanged();
+    return true;
 }
 
 void GameBridge::configureClock(int whiteMs, int blackMs, int wIncMs, int bIncMs)
@@ -203,7 +265,7 @@ int GameBridge::blackRemainingMs() const
 QVariantList GameBridge::legalMovesFrom(int square) const
 {
     QVariantList targets;
-    Board boardCopy = m_game.get_board();
+    Board boardCopy = (m_viewIndex >= 0 ? m_viewGame : m_game).get_board();
     const std::vector<Move> moves = generate_legal_moves(boardCopy, square);
     for (const Move& m : moves)
         targets.append(m.square_to);
@@ -212,9 +274,20 @@ QVariantList GameBridge::legalMovesFrom(int square) const
 
 bool GameBridge::makeMove(int from, int to, int promotionPiece)
 {
-    // Snap back to live position if browsing history
+    // If browsing history, truncate the game to the viewed position first,
+    // so the move is made from that past position (nullifying all future moves).
     if (m_viewIndex >= 0) {
+        const auto& hist = m_game.get_move_history();
+        int replayTo = m_viewIndex;
+        Game newGame;
+        const std::string& sf = m_game.start_fen();
+        if (!sf.empty()) newGame.set_start_fen(sf);
+        for (int i = 0; i < replayTo && i < (int)hist.size(); ++i)
+            newGame.make_move(hist[i]);
+        newGame.check_game_status();
+        m_game = std::move(newGame);
         m_viewIndex = -1;
+        m_clockTimer->stop();
     }
 
     Board boardCopy = m_game.get_board();
@@ -255,8 +328,14 @@ void GameBridge::resign()
 {
     if (m_game.get_game_status() != ONGOING) return;
     m_clockTimer->stop();
+    m_engineThinking = false;
+    // Tell Stockfish to stop searching immediately so it doesn't keep burning CPU.
+    if (m_engineWorker)      m_engineWorker->stopSearch();
+    if (m_engineWorkerBlack) m_engineWorkerBlack->stopSearch();
+    m_resigned = true;
     int loser = currentTurn();
     emit playerResigned(loser);
+    emit positionChanged();
     emit positionChanged();
 }
 
@@ -480,6 +559,7 @@ void GameBridge::setComputerSide(int color)
             m_engineWorker->moveToThread(m_engineThread);
             connect(m_engineThread, &QThread::finished, m_engineWorker, &QObject::deleteLater);
             connect(m_engineWorker, &EngineWorker::thinkFinished, this, [this](UCISearchResult result) {
+                if (!m_engineThinking) return; // stale result from a previous game
                 m_engineThinking = false;
                 qDebug() << "Engine result: valid=" << result.valid() << "move=" << QString::fromStdString(result.bestmove);
                 if (result.valid() && m_game.get_game_status() == ONGOING) {
@@ -564,6 +644,7 @@ void GameBridge::setComputerSide(int color)
             m_engineWorkerBlack->moveToThread(m_engineThreadBlack);
             connect(m_engineThreadBlack, &QThread::finished, m_engineWorkerBlack, &QObject::deleteLater);
             connect(m_engineWorkerBlack, &EngineWorker::thinkFinished, this, [this](UCISearchResult result) {
+                if (!m_engineThinking) return; // stale result from a previous game
                 m_engineThinking = false;
                 qDebug() << "Black engine result: valid=" << result.valid() << "move=" << QString::fromStdString(result.bestmove);
                 if (result.valid() && m_game.get_game_status() == ONGOING)
@@ -612,6 +693,7 @@ void GameBridge::maybeStartEngineMove()
     if (m_computerSide < 0)                  return;
     if (!m_engineReady)                      return;
     if (m_engineThinking)                    return;
+    if (m_resigned)                          return;
     if (m_game.get_game_status() != ONGOING) return;
 
     // m_computerSide: 0=engine plays white, 1=engine plays black, 2=both sides
@@ -637,6 +719,14 @@ void GameBridge::maybeStartEngineMove()
         opts.btime = blackRemainingMs();
         opts.winc  = m_wIncMs;
         opts.binc  = m_bIncMs;
+        // Cap the engine's reported time to 5 minutes for HvC and CvC games
+        // so the engine doesn't spend excessively long on early moves.
+        // <0 = analysis – leave untouched.
+        constexpr long long kMaxEngineTimeMs = 300000; // 5 minutes
+        if (m_computerSide >= 0) {
+            if (opts.wtime > kMaxEngineTimeMs) opts.wtime = kMaxEngineTimeMs;
+            if (opts.btime > kMaxEngineTimeMs) opts.btime = kMaxEngineTimeMs;
+        }
     } else {
         // No clock: give the engine a virtual 5-minute pool so it uses its
         // own time management (replies instantly on easy moves, thinks longer
@@ -768,3 +858,355 @@ void GameBridge::takeBack()
     QTimer::singleShot(0, this, &GameBridge::maybeStartEngineMove);
 }
 
+// ── Persistent game save / restore ──────────────────────────────────────────
+
+void GameBridge::saveGame(const QString& whiteName, const QString& blackName,
+                          int computerSide, int whiteElo, int blackElo)
+{
+    if (m_game.get_move_history().empty()) return; // nothing to save
+    if (m_game.get_game_status() != ONGOING) return; // finished game – don't save
+
+    // Serialise move history as space-separated UCI strings
+    QStringList uciMoves;
+    for (const Move& m : m_game.get_move_history())
+        uciMoves << QString::fromStdString(move_to_uci(m));
+
+    QSettings s;
+    s.beginGroup(QStringLiteral("savedgame"));
+    s.setValue(QStringLiteral("exists"),        true);
+    s.setValue(QStringLiteral("startFen"),      QString::fromStdString(m_game.start_fen()));
+    s.setValue(QStringLiteral("moves"),         uciMoves.join(QLatin1Char(' ')));
+    s.setValue(QStringLiteral("whiteName"),     whiteName);
+    s.setValue(QStringLiteral("blackName"),     blackName);
+    s.setValue(QStringLiteral("computerSide"),  computerSide);
+    s.setValue(QStringLiteral("whiteElo"),      whiteElo);
+    s.setValue(QStringLiteral("blackElo"),      blackElo);
+    // Clock state (-1 = no clocks)
+    if (m_game.has_clocks()) {
+        s.setValue(QStringLiteral("whiteRemainingMs"), static_cast<int>(m_game.remaining_ms(WHITE)));
+        s.setValue(QStringLiteral("blackRemainingMs"), static_cast<int>(m_game.remaining_ms(BLACK)));
+        s.setValue(QStringLiteral("wIncMs"),           m_wIncMs);
+        s.setValue(QStringLiteral("bIncMs"),           m_bIncMs);
+    } else {
+        s.setValue(QStringLiteral("whiteRemainingMs"), -1);
+        s.setValue(QStringLiteral("blackRemainingMs"), -1);
+        s.setValue(QStringLiteral("wIncMs"),           0);
+        s.setValue(QStringLiteral("bIncMs"),           0);
+    }
+    s.setValue(QStringLiteral("undoAllowed"),   m_undoAllowed);
+    s.endGroup();
+    emit hasSavedGameChanged();
+}
+
+void GameBridge::pauseForMenu()
+{
+    // Stop the clock without resetting remaining time – it was already
+    // written to QSettings by the saveGame() call that precedes this.
+    m_clockTimer->stop();
+    if (m_game.clock_running())
+        m_game.stop_clock();
+    // Prevent any queued engine think from firing after we go to the menu.
+    m_engineThinking = false;
+    m_computerSide   = -1;
+    // Leave m_game intact so the board still renders the live position.
+}
+
+bool GameBridge::hasSavedGame() const
+{
+    QSettings s;
+    return s.value(QStringLiteral("savedgame/exists"), false).toBool();
+}
+
+QVariantMap GameBridge::loadSavedGame()
+{
+    QSettings s;
+    if (!s.value(QStringLiteral("savedgame/exists"), false).toBool())
+        return {};
+
+    s.beginGroup(QStringLiteral("savedgame"));
+    QString    startFen       = s.value(QStringLiteral("startFen")).toString();
+    QString    movesStr       = s.value(QStringLiteral("moves")).toString();
+    QString    whiteName      = s.value(QStringLiteral("whiteName"),    QStringLiteral("White")).toString();
+    QString    blackName      = s.value(QStringLiteral("blackName"),    QStringLiteral("Black")).toString();
+    int        computerSide   = s.value(QStringLiteral("computerSide"), -1).toInt();
+    int        whiteElo       = s.value(QStringLiteral("whiteElo"),     0).toInt();
+    int        blackElo       = s.value(QStringLiteral("blackElo"),     0).toInt();
+    int        wRemMs         = s.value(QStringLiteral("whiteRemainingMs"), -1).toInt();
+    int        bRemMs         = s.value(QStringLiteral("blackRemainingMs"), -1).toInt();
+    int        wIncMs         = s.value(QStringLiteral("wIncMs"),          0).toInt();
+    int        bIncMs         = s.value(QStringLiteral("bIncMs"),          0).toInt();
+    bool       undoAllowed    = s.value(QStringLiteral("undoAllowed"),  true).toBool();
+    s.endGroup();
+
+    // ── Rebuild game object ──────────────────────────────────────────────
+    m_clockTimer->stop();
+    m_engineThinking = false;
+    m_lastMoveFrom = -1;
+    m_lastMoveTo   = -1;
+    m_viewIndex    = -1;
+
+    m_game = Game();
+    if (!startFen.isEmpty())
+        m_game.set_start_fen(startFen.toStdString());
+
+    const QStringList uciMoves = movesStr.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    for (const QString& uci : uciMoves) {
+        Board b = m_game.get_board();
+        Move  m = uci_to_move(uci.toStdString(), b, m_game.get_turn());
+        if (m.square_from == m.square_to) {
+            qWarning() << "loadSavedGame: invalid UCI move" << uci << "– aborting replay";
+            m_game = Game(); // reset to avoid half-baked state
+            clearSavedGame();
+            return {};
+        }
+        m_game.make_move(m);
+    }
+    m_game.check_game_status();
+
+    // Record last move highlights
+    if (!m_game.get_move_history().empty()) {
+        m_lastMoveFrom = m_game.get_move_history().back().square_from;
+        m_lastMoveTo   = m_game.get_move_history().back().square_to;
+    }
+
+    // Restore clocks if applicable
+    m_wIncMs = wIncMs;
+    m_bIncMs = bIncMs;
+    if (wRemMs >= 0 && bRemMs >= 0) {
+        m_game.set_clocks(static_cast<long long>(wRemMs), static_cast<long long>(bRemMs),
+                          static_cast<long long>(wIncMs), static_cast<long long>(bIncMs));
+        if (m_game.get_game_status() == ONGOING) {
+            m_game.start_clock();
+            m_clockTimer->start();
+        }
+    }
+
+    m_undoAllowed = undoAllowed;
+
+    buildCapturedLists();
+    emit positionChanged();
+    emit clockChanged();
+
+    QVariantMap result;
+    result[QStringLiteral("whiteName")]        = whiteName;
+    result[QStringLiteral("blackName")]        = blackName;
+    result[QStringLiteral("computerSide")]     = computerSide;
+    result[QStringLiteral("whiteElo")]         = whiteElo;
+    result[QStringLiteral("blackElo")]         = blackElo;
+    result[QStringLiteral("whiteRemainingMs")] = wRemMs;
+    result[QStringLiteral("blackRemainingMs")] = bRemMs;
+    result[QStringLiteral("wIncMs")]           = wIncMs;
+    result[QStringLiteral("bIncMs")]           = bIncMs;
+    return result;
+}
+
+void GameBridge::clearSavedGame()
+{
+    QSettings s;
+    s.remove(QStringLiteral("savedgame"));
+    emit hasSavedGameChanged();
+}
+
+QString GameBridge::savedBoardTheme() const
+{
+    return QSettings().value(QStringLiteral("themes/board"), QStringLiteral("brown")).toString();
+}
+
+QString GameBridge::savedPieceTheme() const
+{
+    return QSettings().value(QStringLiteral("themes/piece"), QStringLiteral("cburnett")).toString();
+}
+// ---------------------------------------------------------------------------
+// Background analysis engine
+// ---------------------------------------------------------------------------
+
+static void snapshotPosition(const Game& game,
+                              QString& outFen,
+                              QStringList& outMoves,
+                              int& outTurn)
+{
+    outFen  = QString::fromStdString(game.start_fen());
+    outTurn = static_cast<int>(game.get_turn());
+    outMoves.clear();
+    for (const Move& mv : game.get_move_history())
+        outMoves << QString::fromStdString(move_to_uci(mv));
+}
+
+void GameBridge::startAnalysis()
+{
+    if (m_analysisRunning) return;
+
+    // Determine which engine binary to use: user-configured or bundled.
+    QString enginePath = m_enginePath;
+    if (enginePath.isEmpty()) {
+#if defined(Q_OS_WIN)
+        enginePath = QStringLiteral(ASSETS_PATH "/stockfish-win/stockfish-windows-x86-64-avx2.exe");
+#else
+        enginePath = QStringLiteral(ASSETS_PATH "/stockfish/stockfish-ubuntu-x86-64-avx2");
+#endif
+    }
+    if (!QFileInfo::exists(enginePath)) {
+        qDebug() << "[Analysis] engine binary not found:" << enginePath;
+        return;
+    }
+    qDebug() << "[Analysis] starting analysis engine:" << enginePath;
+
+    m_analysisRunning = true;
+    m_analysisPending = false;
+
+    const Game& g = (m_viewIndex >= 0) ? m_viewGame : m_game;
+    snapshotPosition(g, m_analysisFen, m_analysisMoves, m_analysisTurn);
+
+    if (!m_analysisEngineReady) {
+        m_analysisThread = new QThread(this);
+        m_analysisWorker = new AnalysisWorker();
+        m_analysisWorker->moveToThread(m_analysisThread);
+        connect(m_analysisThread, &QThread::finished,
+                m_analysisWorker, &QObject::deleteLater);
+
+        // Eval results → update properties on main thread
+        connect(m_analysisWorker, &AnalysisWorker::evalUpdate,
+                this, [this](UCISearchResult r) {
+            m_analysisEvalMate   = r.score_mate;
+            m_analysisEvalCp     = r.score_mate ? 0 : r.score_cp;
+            m_analysisEvalMateIn = r.mate_in;
+            emit analysisEvalChanged();
+        }, Qt::QueuedConnection);
+
+        connect(m_analysisWorker, &AnalysisWorker::topLinesUpdate,
+                this, [this](QVariantList lines) {
+            m_analysisTopLines = std::move(lines);
+            // Depth comes from the best line (first entry)
+            if (!m_analysisTopLines.isEmpty()) {
+                auto first = m_analysisTopLines.first().toMap();
+                int d = first.value(QStringLiteral("depth"), 0).toInt();
+                if (d != m_analysisDepth) {
+                    m_analysisDepth = d;
+                    emit analysisDepthChanged();
+                }
+            }
+            emit analysisTopLinesChanged();
+        }, Qt::QueuedConnection);
+
+        // After each search completes: dispatch pending (newer) position or
+        // repeat with the same position for continuous analysis.
+        connect(m_analysisWorker, &AnalysisWorker::searchDone,
+                this, [this](QString fen, QStringList moves, int turn) {
+            m_analysisLoopActive = false;
+            if (!m_analysisRunning || !m_analysisWorker) return;
+            // Don't re-queue if the viewed position is terminal (e.g. checkmate).
+            const Game& viewedGame = (m_viewIndex >= 0) ? m_viewGame : m_game;
+            if (viewedGame.get_game_status() != ONGOING) return;
+            // When a fixed depth limit is set and nothing changed, the search is
+            // complete – sit idle until the position changes.
+            if (m_maxEngineDepth > 0 && !m_analysisPending) return;
+            if (m_analysisPending) {
+                m_analysisPending = false;
+                fen   = m_analysisFen;
+                moves = m_analysisMoves;
+                turn  = m_analysisTurn;
+            }
+            QMetaObject::invokeMethod(m_analysisWorker, "doAnalyze",
+                Qt::QueuedConnection,
+                Q_ARG(QString,     fen),
+                Q_ARG(QStringList, moves),
+                Q_ARG(int,         turn));
+            m_analysisLoopActive = true;
+        }, Qt::QueuedConnection);
+
+        m_analysisThread->start();
+
+        // Start the engine on the worker thread, then kick off the first search.
+        const QString epath   = enginePath;
+        const int     threads = m_engineThreads;
+        const QString fen0    = m_analysisFen;
+        const QStringList mv0 = m_analysisMoves;
+        const int     turn0   = m_analysisTurn;
+        QTimer::singleShot(0, m_analysisWorker, [this, epath, threads, fen0, mv0, turn0]() {
+            bool ok = m_analysisWorker->startEngine(epath.toStdString(), threads);
+            if (ok) {
+                m_analysisEngineReady = true;
+                // Grab the engine name on the worker thread and push it to the main thread.
+                QString eName = m_analysisWorker->engineName();
+                QMetaObject::invokeMethod(this, [this, eName]() {
+                    if (eName != m_analysisEngineName) {
+                        m_analysisEngineName = eName;
+                        emit analysisEngineNameChanged();
+                    }
+                }, Qt::QueuedConnection);
+                QMetaObject::invokeMethod(m_analysisWorker, "doAnalyze",
+                    Qt::QueuedConnection,
+                    Q_ARG(QString,     fen0),
+                    Q_ARG(QStringList, mv0),
+                    Q_ARG(int,         turn0));
+            } else {
+                qDebug() << "[Analysis] failed to start engine:" << epath;
+            }
+        });
+        m_analysisLoopActive = true;
+    } else {
+        m_analysisLoopActive = true;
+        QMetaObject::invokeMethod(m_analysisWorker, "doAnalyze",
+            Qt::QueuedConnection,
+            Q_ARG(QString,     m_analysisFen),
+            Q_ARG(QStringList, m_analysisMoves),
+            Q_ARG(int,         m_analysisTurn));
+    }
+}
+
+void GameBridge::stopAnalysis()
+{
+    // Stop re-queuing and abort the current in-flight search immediately.
+    m_analysisRunning    = false;
+    m_analysisLoopActive = false;
+    if (m_analysisWorker)
+        m_analysisWorker->stopSearch();
+}
+
+void GameBridge::restartAnalysisIfRunning()
+{
+    if (!m_analysisRunning) return;
+    // Don't restart if the *viewed* position is a finished game.
+    const Game& viewedGame = (m_viewIndex >= 0) ? m_viewGame : m_game;
+    if (viewedGame.get_game_status() != ONGOING) return;
+
+    const Game& g = (m_viewIndex >= 0) ? m_viewGame : m_game;
+    snapshotPosition(g, m_analysisFen, m_analysisMoves, m_analysisTurn);
+    // Mark dirty so searchDone picks up the new position on the next cycle,
+    // then interrupt the running infinite search so it unblocks immediately.
+    m_analysisPending = true;
+    if (m_analysisWorker) {
+        // Increment generation BEFORE stopSearch so any in-flight emit inside
+        // stream_multipv's on_update callback sees the new value and is dropped.
+        m_analysisWorker->generation.fetch_add(1, std::memory_order_release);
+        m_analysisWorker->stopSearch();
+    }
+    // Immediately clear stale eval so the UI reacts to the move right away,
+    // without waiting for the engine to finish stopping (~100-800 ms).
+    m_analysisEvalCp    = 0;
+    m_analysisEvalMate  = false;
+    m_analysisEvalMateIn = 0;
+    emit analysisEvalChanged();
+    if (!m_analysisTopLines.isEmpty()) {
+        m_analysisTopLines.clear();
+        emit analysisTopLinesChanged();
+    }
+    // Reset depth so the UI doesn't show a stale value while the new search starts.
+    if (m_analysisDepth != 0) {
+        m_analysisDepth = 0;
+        emit analysisDepthChanged();
+    }
+    // If the loop went dormant (stopped at a fixed depth or terminal position),
+    // re-kick it directly with the already-snapshotted position.
+    // Clear m_analysisPending here because we're passing the position inline;
+    // leaving it true would cause searchDone to re-queue a redundant extra search.
+    if (!m_analysisLoopActive && m_analysisWorker) {
+        m_analysisPending = false;
+        m_analysisLoopActive = true;
+        QMetaObject::invokeMethod(m_analysisWorker, "doAnalyze",
+            Qt::QueuedConnection,
+            Q_ARG(QString,     m_analysisFen),
+            Q_ARG(QStringList, m_analysisMoves),
+            Q_ARG(int,         m_analysisTurn));
+    }
+}

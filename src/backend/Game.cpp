@@ -50,6 +50,8 @@ bool Game::make_move(const Move& move) {
             status = TIMEOUT;
             return false;
         }
+        // Apply increment only after confirming the clock did not expire
+        active.remaining_ms += active.increment_ms;
     }
 
     std::vector<Move> legal_moves = generate_legal_moves(board, move.square_from);
@@ -172,7 +174,7 @@ long long Game::stop_clock() {
 
     Clock& c = (clock_owner_ == WHITE) ? white_clock_ : black_clock_;
     c.remaining_ms -= ms;
-    c.remaining_ms += c.increment_ms; // add increment after move completes
+    // NOTE: increment is applied by make_move() only after confirming no timeout
     return ms;
 }
 
@@ -182,6 +184,10 @@ bool Game::flag_if_timed_out() {
     if (status != ONGOING || !clocks_set_ || !clock_running_)
         return false;
     if (remaining_ms(clock_owner_) <= 0) {
+        // Freeze the flagged clock at 0 before stopping, so the stored value
+        // reflects reality instead of the pre-elapsed stale positive amount.
+        Clock& c = (clock_owner_ == WHITE) ? white_clock_ : black_clock_;
+        c.remaining_ms = 0;
         status = TIMEOUT;
         clock_running_ = false;
         return true;

@@ -265,6 +265,88 @@ UCISearchResult UCIEngine::wait_for_bestmove(int timeout_ms) {
 }
 
 // ---------------------------------------------------------------------------
+// wait_for_bestmove_multi – collect up to n MultiPV lines
+// ---------------------------------------------------------------------------
+std::vector<UCISearchResult> UCIEngine::wait_for_bestmove_multi(int n, int timeout_ms)
+{
+    std::vector<UCISearchResult> results(n);
+
+    QElapsedTimer timer;
+    timer.start();
+
+    while (timer.elapsed() < timeout_ms) {
+        int remaining = static_cast<int>(timeout_ms - timer.elapsed());
+        std::string line = read_line(remaining);
+        if (line.empty()) break;
+
+        auto toks = tokenize(line);
+        if (toks.empty()) continue;
+
+        if (toks[0] == "info") {
+            // Determine multipv index from line (default to 1 if not present)
+            int pvIdx = 0;
+            for (size_t i = 1; i + 1 < toks.size(); ++i) {
+                if (toks[i] == "multipv") {
+                    pvIdx = std::stoi(toks[i + 1]) - 1; // convert 1-based to 0-based
+                    break;
+                }
+            }
+            if (pvIdx >= 0 && pvIdx < n)
+                results[pvIdx] = parse_info_line(line, results[pvIdx]);
+        } else if (toks[0] == "bestmove") {
+            if (toks.size() >= 2) results[0].bestmove = toks[1];
+            return results;
+        }
+    }
+    return results; // timeout
+}
+
+// ---------------------------------------------------------------------------
+// stream_multipv – live MultiPV updates via callback
+// ---------------------------------------------------------------------------
+std::vector<UCISearchResult> UCIEngine::stream_multipv(
+    int n, int timeout_ms,
+    std::function<void(const std::vector<UCISearchResult>&)> on_update)
+{
+    std::vector<UCISearchResult> current(n);
+    int lastCallbackDepth = -1;
+
+    QElapsedTimer timer;
+    timer.start();
+
+    while (timer.elapsed() < timeout_ms) {
+        int remaining = static_cast<int>(timeout_ms - timer.elapsed());
+        std::string line = read_line(remaining);
+        if (line.empty()) break;
+
+        auto toks = tokenize(line);
+        if (toks.empty()) continue;
+
+        if (toks[0] == "info") {
+            // Determine multipv index (0-based), default 0
+            int pvIdx = 0;
+            for (size_t i = 1; i + 1 < toks.size(); ++i) {
+                if (toks[i] == "multipv") { pvIdx = std::stoi(toks[i+1]) - 1; break; }
+            }
+            if (pvIdx >= n) pvIdx = n - 1;
+            current[pvIdx] = parse_info_line(line, current[pvIdx]);
+
+            // Fire callback whenever we receive the last PV slot at a new depth.
+            // pvIdx == n-1 (or pvIdx == 0 when n==1) means we have a full set.
+            int depth = current[0].depth;
+            if (pvIdx == n - 1 && depth > lastCallbackDepth && depth > 0) {
+                lastCallbackDepth = depth;
+                on_update(current);
+            }
+        } else if (toks[0] == "bestmove") {
+            if (toks.size() >= 2) current[0].bestmove = toks[1];
+            return current;
+        }
+    }
+    return current; // timeout
+}
+
+// ---------------------------------------------------------------------------
 // High-level helper
 // ---------------------------------------------------------------------------
 UCISearchResult UCIEngine::think(const Game& game, const UCIGoOptions& opts) {
@@ -345,6 +427,8 @@ UCISearchResult UCIEngine::parse_info_line(const std::string& line,
                 r.score_mate = true;
                 r.mate_in    = std::stoi(toks[++i]);
             }
+        } else if (toks[i] == "multipv" && i + 1 < toks.size()) {
+            r.multipv = std::stoi(toks[++i]);
         } else if (toks[i] == "pv") {
             // Everything from "pv" to end of line is the PV
             std::string pv;

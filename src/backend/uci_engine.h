@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include "Game.h"
 
 #include <string>
@@ -24,6 +26,7 @@ struct UCISearchResult {
     int  depth    = 0;
     long nodes    = 0;
     int  seldepth = 0;
+    int  multipv  = 1; // 1-based PV index (1 = best line)
     std::string pv; // principal variation (space-separated UCI moves)
 
     bool valid() const { return !bestmove.empty(); }
@@ -130,6 +133,18 @@ public:
 
     /// Block until the engine emits "bestmove", return the result.
     UCISearchResult wait_for_bestmove(int timeout_ms = 30000);
+
+    /// Like wait_for_bestmove but collects up to @p n MultiPV lines.
+    /// Returns a vector of size n (entries without engine output have valid()==false).
+    std::vector<UCISearchResult> wait_for_bestmove_multi(int n, int timeout_ms = 30000);
+
+    /// Run an infinite/movetime search already started with go().
+    /// @p on_update is called every time a full set of @p n MultiPV lines has
+    /// been received for a given depth.  Returns when "bestmove" arrives or
+    /// the timeout elapses.
+    std::vector<UCISearchResult> stream_multipv(
+        int n, int timeout_ms,
+        std::function<void(const std::vector<UCISearchResult>&)> on_update);
 
     // ------------------------------------------------------------------
     // High-level helper

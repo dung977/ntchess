@@ -42,6 +42,11 @@ qt_add_qml_module(appntchess
         qml/ChessBoard.qml
         qml/SettingsDialog.qml
         qml/NewGameDialog.qml
+        qml/ImportDialog.qml
+        qml/AnalysisSettingsDialog.qml
+        qml/AnalysisView.qml
+        qml/PlayerBar.qml
+        qml/IconBtn.qml
 )
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
