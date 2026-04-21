@@ -246,6 +246,8 @@ Window {
                 Menu {
                     id: panelMenu
                     y: stripeBtn.height + 4
+                    x: stripeBtn.width - width
+                    width: Math.round(squareSize * 2.4)
 
                     background: Rectangle {
                         color: "#2a2a2a"
@@ -255,13 +257,15 @@ Window {
 
                     MenuItem {
                         text: "Settings"
-                        contentItem: Text { text: parent.text; color: "#ddd"; font.pixelSize: Math.round(squareSize * 0.175); leftPadding: 8 }
+                        width: panelMenu.width
+                        contentItem: Text { text: parent.text; color: "#ddd"; font.pixelSize: Math.round(squareSize * 0.175); leftPadding: 8; width: parent.width; verticalAlignment: Text.AlignVCenter }
                         background: Rectangle { color: parent.highlighted ? "#3a3a3a" : "transparent" }
                         onTriggered: settingsDialog.open()
                     }
                     MenuItem {
                         text: "Back to Menu"
-                        contentItem: Text { text: parent.text; color: "#ddd"; font.pixelSize: Math.round(squareSize * 0.175); leftPadding: 8 }
+                        width: panelMenu.width
+                        contentItem: Text { text: parent.text; color: "#ddd"; font.pixelSize: Math.round(squareSize * 0.175); leftPadding: 8; width: parent.width; verticalAlignment: Text.AlignVCenter }
                         background: Rectangle { color: parent.highlighted ? "#3a3a3a" : "transparent" }
                         onTriggered: {
                             // Save current game state so Continue works

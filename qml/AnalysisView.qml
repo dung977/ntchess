@@ -170,6 +170,8 @@ Item {
                 Menu {
                     id: panelMenu
                     y: stripeBtn.height + 4
+                    x: stripeBtn.width - width
+                    width: Math.round(analysisView.squareSize * 2.4)
                     font.pixelSize: Math.round(analysisView.squareSize * 0.175)
 
                     background: Rectangle {
@@ -178,20 +180,24 @@ Item {
 
                     MenuItem {
                         text: "Settings"
+                        width: panelMenu.width
                         contentItem: Text {
                             text: parent.text; color: "#ddd"
                             font.pixelSize: panelMenu.font.pixelSize
-                            leftPadding: 8
+                            leftPadding: 8; width: parent.width
+                            verticalAlignment: Text.AlignVCenter
                         }
                         background: Rectangle { color: parent.highlighted ? "#3a3a3a" : "transparent" }
                         onTriggered: analysisView.settingsRequested()
                     }
                     MenuItem {
                         text: "Back to Menu"
+                        width: panelMenu.width
                         contentItem: Text {
                             text: parent.text; color: "#ddd"
                             font.pixelSize: panelMenu.font.pixelSize
-                            leftPadding: 8
+                            leftPadding: 8; width: parent.width
+                            verticalAlignment: Text.AlignVCenter
                         }
                         background: Rectangle { color: parent.highlighted ? "#3a3a3a" : "transparent" }
                         onTriggered: analysisView.backToMenu()
