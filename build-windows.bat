@@ -60,6 +60,10 @@ if exist "%_CMAKE_HINT%\cmake.exe" set "PATH=%_CMAKE_HINT%;%PATH%"
 set "_MINGW_BIN=%QT_ROOT_DIR%\..\..\Tools\mingw1310_64\bin"
 if exist "%_MINGW_BIN%\gcc.exe" set "PATH=%_MINGW_BIN%;%PATH%"
 
+:: Ninja
+set "_NINJA_BIN=%QT_ROOT_DIR%\..\..\Tools\Ninja"
+if exist "%_NINJA_BIN%\ninja.exe" set "PATH=%_NINJA_BIN%;%PATH%"
+
 :: Qt bin (needed so cmake can find Qt6Config.cmake and so windeployqt runs)
 set "PATH=%QT_ROOT_DIR%\bin;%PATH%"
 

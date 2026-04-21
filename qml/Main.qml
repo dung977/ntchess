@@ -243,11 +243,13 @@ Window {
                     onClicked: panelMenu.open()
                 }
 
-                Menu {
+                Popup {
                     id: panelMenu
                     y: stripeBtn.height + 4
                     x: stripeBtn.width - width
                     width: Math.round(squareSize * 2.4)
+                    padding: 0
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
 
                     background: Rectangle {
                         color: "#2a2a2a"
@@ -255,32 +257,39 @@ Window {
                         border.color: "#555"
                     }
 
-                    MenuItem {
-                        text: "Settings"
+                    Column {
                         width: panelMenu.width
-                        contentItem: Text { text: parent.text; color: "#ddd"; font.pixelSize: Math.round(squareSize * 0.175); leftPadding: 8; width: parent.width; verticalAlignment: Text.AlignVCenter }
-                        background: Rectangle { color: parent.highlighted ? "#3a3a3a" : "transparent" }
-                        onTriggered: settingsDialog.open()
-                    }
-                    MenuItem {
-                        text: "Back to Menu"
-                        width: panelMenu.width
-                        contentItem: Text { text: parent.text; color: "#ddd"; font.pixelSize: Math.round(squareSize * 0.175); leftPadding: 8; width: parent.width; verticalAlignment: Text.AlignVCenter }
-                        background: Rectangle { color: parent.highlighted ? "#3a3a3a" : "transparent" }
-                        onTriggered: {
-                            // Save current game state so Continue works
-                            if (chessboard.gameStatus === "ongoing" && mainWindow.resignedSide < 0)
-                                chessboard.saveGame(
-                                    mainWindow.whitePlayerName,
-                                    mainWindow.blackPlayerName,
-                                    mainWindow.gameComputerSide,
-                                    mainWindow.whitePlayerElo,
-                                    mainWindow.blackPlayerElo
-                                )
-                            // Pause (stop clock/engine) but keep board position
-                            // visible in the menu background.
-                            chessboard.pauseForMenu()
-                            appScreen = "menu"
+
+                        Rectangle {
+                            id: settingsRow
+                            width: panelMenu.width
+                            height: Math.round(squareSize * 0.35)
+                            color: settingsMa.containsMouse ? "#3a3a3a" : "transparent"
+                            Text { anchors.fill: parent; leftPadding: 8; text: "Settings"; color: "#ddd"; font.pixelSize: Math.round(squareSize * 0.175); verticalAlignment: Text.AlignVCenter }
+                            MouseArea { id: settingsMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { panelMenu.close(); settingsDialog.open() } }
+                        }
+                        Rectangle {
+                            id: backRow
+                            width: panelMenu.width
+                            height: Math.round(squareSize * 0.35)
+                            color: backMa.containsMouse ? "#3a3a3a" : "transparent"
+                            Text { anchors.fill: parent; leftPadding: 8; text: "Back to Menu"; color: "#ddd"; font.pixelSize: Math.round(squareSize * 0.175); verticalAlignment: Text.AlignVCenter }
+                            MouseArea {
+                                id: backMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    panelMenu.close()
+                                    if (chessboard.gameStatus === "ongoing" && mainWindow.resignedSide < 0)
+                                        chessboard.saveGame(
+                                            mainWindow.whitePlayerName,
+                                            mainWindow.blackPlayerName,
+                                            mainWindow.gameComputerSide,
+                                            mainWindow.whitePlayerElo,
+                                            mainWindow.blackPlayerElo
+                                        )
+                                    chessboard.pauseForMenu()
+                                    appScreen = "menu"
+                                }
+                            }
                         }
                     }
                 }

@@ -424,13 +424,13 @@ Popup {
                     text: "Cancel"; width: root.btnW; height: root.btnH
                     onClicked: root.close()
                     background: Rectangle { color: parent.hovered ? root.hoverColor : root.itemColor; radius: 4; border.color: root.borderColor }
-                    contentItem: Text { text: parent.text; color: root.textPrimary; horizontalAlignment: Text.AlignHCenter; font.pixelSize: root.fs }
+                    contentItem: Text { text: parent.text; color: root.textPrimary; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; font.pixelSize: root.fs }
                 }
                 Button {
                     text: "Apply"; width: root.btnW; height: root.btnH
                     onClicked: { root.applied(); root.close() }
                     background: Rectangle { color: parent.hovered ? root.accentHover : root.accentColor; radius: 4 }
-                    contentItem: Text { text: parent.text; color: root.textPrimary; horizontalAlignment: Text.AlignHCenter; font.pixelSize: root.fs }
+                    contentItem: Text { text: parent.text; color: root.textPrimary; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; font.pixelSize: root.fs }
                 }
             }
         }

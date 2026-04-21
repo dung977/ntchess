@@ -74,34 +74,35 @@ Popup {
                 Layout.fillWidth: true
             }
 
-            Switch {
-                id:       arrowSwitch
-                checked:  root.showBestMoveArrow
-                onToggled: root.showBestMoveArrow = checked
+            // Custom toggle – fully platform-independent sizing
+            Rectangle {
+                id: arrowToggle
+                readonly property bool on: root.showBestMoveArrow
+                width:  Math.round(root.rowH * 1.2)
+                height: Math.round(root.rowH * 0.60)
+                radius: height / 2
+                color:  on ? "#4caf50" : "#555"
+                border.color: on ? "#388e3c" : "#444"
+                border.width: 1
+                Layout.alignment: Qt.AlignVCenter
 
-                // Compact dark-themed track + handle
-                indicator: Rectangle {
-                    implicitWidth:  Math.round(root.rowH * 1.2)
-                    implicitHeight: Math.round(root.rowH * 0.60)
-                    radius:         height / 2
-                    color:          arrowSwitch.checked ? "#4caf50" : "#555"
-                    border.color:   arrowSwitch.checked ? "#388e3c" : "#444"
-                    border.width:   1
-
-                    Rectangle {
-                        x:       arrowSwitch.checked
-                                     ? parent.width  - width  - root.sp4
-                                     : root.sp4
-                        anchors.verticalCenter: parent.verticalCenter
-                        width:   Math.round(parent.height * 0.70)
-                        height:  width
-                        radius:  width / 2
-                        color:   "white"
-
-                        Behavior on x { NumberAnimation { duration: 120 } }
-                    }
+                Rectangle {
+                    x:       arrowToggle.on
+                                 ? parent.width  - width  - root.sp4
+                                 : root.sp4
+                    anchors.verticalCenter: parent.verticalCenter
+                    width:  Math.round(parent.height * 0.70)
+                    height: width
+                    radius: width / 2
+                    color:  "white"
+                    Behavior on x { NumberAnimation { duration: 120 } }
                 }
-                contentItem: Item {}   // suppress default label (we use our own Text)
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.showBestMoveArrow = !root.showBestMoveArrow
+                }
             }
         }
 

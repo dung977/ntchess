@@ -167,40 +167,35 @@ Item {
                     onClicked: panelMenu.open()
                 }
 
-                Menu {
+                Popup {
                     id: panelMenu
                     y: stripeBtn.height + 4
                     x: stripeBtn.width - width
                     width: Math.round(analysisView.squareSize * 2.4)
-                    font.pixelSize: Math.round(analysisView.squareSize * 0.175)
+                    padding: 0
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
 
                     background: Rectangle {
                         color: "#2a2a2a"; radius: 4; border.color: "#555"
                     }
 
-                    MenuItem {
-                        text: "Settings"
+                    Column {
                         width: panelMenu.width
-                        contentItem: Text {
-                            text: parent.text; color: "#ddd"
-                            font.pixelSize: panelMenu.font.pixelSize
-                            leftPadding: 8; width: parent.width
-                            verticalAlignment: Text.AlignVCenter
+
+                        Rectangle {
+                            width: panelMenu.width
+                            height: Math.round(analysisView.squareSize * 0.35)
+                            color: settingsMa.containsMouse ? "#3a3a3a" : "transparent"
+                            Text { anchors.fill: parent; leftPadding: 8; text: "Settings"; color: "#ddd"; font.pixelSize: Math.round(analysisView.squareSize * 0.175); verticalAlignment: Text.AlignVCenter }
+                            MouseArea { id: settingsMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { panelMenu.close(); analysisView.settingsRequested() } }
                         }
-                        background: Rectangle { color: parent.highlighted ? "#3a3a3a" : "transparent" }
-                        onTriggered: analysisView.settingsRequested()
-                    }
-                    MenuItem {
-                        text: "Back to Menu"
-                        width: panelMenu.width
-                        contentItem: Text {
-                            text: parent.text; color: "#ddd"
-                            font.pixelSize: panelMenu.font.pixelSize
-                            leftPadding: 8; width: parent.width
-                            verticalAlignment: Text.AlignVCenter
+                        Rectangle {
+                            width: panelMenu.width
+                            height: Math.round(analysisView.squareSize * 0.35)
+                            color: backMa.containsMouse ? "#3a3a3a" : "transparent"
+                            Text { anchors.fill: parent; leftPadding: 8; text: "Back to Menu"; color: "#ddd"; font.pixelSize: Math.round(analysisView.squareSize * 0.175); verticalAlignment: Text.AlignVCenter }
+                            MouseArea { id: backMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { panelMenu.close(); analysisView.backToMenu() } }
                         }
-                        background: Rectangle { color: parent.highlighted ? "#3a3a3a" : "transparent" }
-                        onTriggered: analysisView.backToMenu()
                     }
                 }
             }
