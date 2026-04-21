@@ -28,9 +28,16 @@ qt_add_executable(appntchess
 )
 
 target_compile_definitions(appntchess PRIVATE
-    # Development fallback: when running from the build directory the assets
-    # haven't been copied yet, so the app falls back to this source-tree path.
-    ASSETS_PATH="${CMAKE_SOURCE_DIR}/assets"
+    # The assets folder is copied next to the executable at build time.
+    ASSETS_PATH="$<TARGET_FILE_DIR:appntchess>/assets"
+)
+
+# ── Post-build: copy assets next to the executable ───────────────────────────
+add_custom_command(TARGET appntchess POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/assets"
+            "$<TARGET_FILE_DIR:appntchess>/assets"
+    COMMENT "Copying assets to build directory..."
 )
 
 # ── Install rules ────────────────────────────────────────────────────────────
